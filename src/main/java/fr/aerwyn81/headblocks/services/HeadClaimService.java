@@ -18,7 +18,9 @@ import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class HeadClaimService {
 
@@ -32,8 +34,20 @@ public class HeadClaimService {
 
     private final ServiceRegistry registry;
 
+    /**
+     * Guards against duplicate interactions (double-click spam, rapid re-clicks).
+     * Key format: {@code playerUuid:huntId:headUuid}. Entries are held while a
+     * claim is being processed and released on every terminal path, including
+     * after the async SQL write completes.
+     */
+    private final Set<String> claimsInProgress = ConcurrentHashMap.newKeySet();
+
     public HeadClaimService(ServiceRegistry registry) {
         this.registry = registry;
+    }
+
+    static String claimKey(UUID playerUuid, UUID headUuid, String huntId) {
+        return playerUuid + ":" + huntId + ":" + headUuid;
     }
 
     public Outcome click(Player player, HeadLocation headLocation, Location clickedLocation, boolean wallHead) {
@@ -76,9 +90,21 @@ public class HeadClaimService {
         HuntConfig huntConfig = hunt.getConfig();
 
         registry.getStorageService().getHeadsPlayer(player.getUniqueId()).whenComplete(player, allPlayerHeads -> {
+            UUID playerUuid = player.getUniqueId();
+            UUID headUuid = headLocation.getUuid();
+            String huntId = hunt.getId();
+            String key = claimKey(playerUuid, headUuid, huntId);
+
+            // Duplicate interaction prevention: ignore concurrent processing of the same claim.
+            // The slot is released on every terminal path, including after the async SQL write.
+            if (!claimsInProgress.add(key)) {
+                return;
+            }
+
+            boolean releaseNow = true;
             try {
                 ArrayList<UUID> huntPlayerHeads = registry.getStorageService().getHeadsPlayerForHunt(
-                        player.getUniqueId(), hunt.getId());
+                        playerUuid, huntId);
 
                 var accessResult = hunt.evaluateAccessGates(player, headLocation);
                 if (!accessResult.allowed()) {
@@ -88,11 +114,11 @@ public class HeadClaimService {
                     return;
                 }
 
-                if (huntPlayerHeads.contains(headLocation.getUuid())) {
-                    showAlreadyClaimed(player, headLocation, clickedLocation, huntConfig, hunt.getId());
+                if (huntPlayerHeads.contains(headUuid)) {
+                    showAlreadyClaimed(player, headLocation, clickedLocation, huntConfig, huntId);
 
                     Bukkit.getPluginManager().callEvent(
-                            new HeadClickEvent(headLocation.getUuid(), player, clickedLocation, false, List.of(hunt.getId())));
+                            new HeadClickEvent(headUuid, player, clickedLocation, false, List.of(huntId)));
                     return;
                 }
 
@@ -112,7 +138,7 @@ public class HeadClaimService {
                     return;
                 }
 
-                huntPlayerHeads.add(headLocation.getUuid());
+                huntPlayerHeads.add(headUuid);
 
                 if (!registry.getRewardService().hasPlayerSlotsRequired(player, huntPlayerHeads, huntConfig)) {
                     var message = registry.getLanguageService().message("Messages.InventoryFullReward");
@@ -122,58 +148,125 @@ public class HeadClaimService {
                     return;
                 }
 
-                registry.getStorageService().addHeadForHunt(player.getUniqueId(), headLocation.getUuid(), hunt.getId());
-
-                hunt.notifyHeadFound(player, headLocation);
-                registry.getAreaEnforcementService().onHeadFound(player, hunt, huntPlayerHeads.size());
-
-                registry.getRewardService().giveReward(player, huntPlayerHeads, headLocation, huntConfig, hunt.getId());
-
-                for (var reward : headLocation.getRewards()) {
-                    reward.execute(player, headLocation, registry);
-                }
-
-                registry.getVisibilityService().onHeadFound(player, headLocation);
-
-                String songName = huntConfig.getHeadClickSoundFound();
-                if (!songName.trim().isEmpty()) {
-                    try {
-                        XSound.play(songName, s -> s.forPlayers(player));
-                    } catch (Exception ex) {
-                        LogUtil.error("Error cannot play sound on head click! Cannot parse provided name...");
-                    }
-                }
-
-                if (huntConfig.isHeadClickTitleEnabled()) {
-                    String firstLine = registry.getPlaceholdersService().parse(player.getName(), player.getUniqueId(),
-                            headLocation, huntConfig.getHeadClickTitleFirstLine(), hunt.getId());
-                    String subTitle = registry.getPlaceholdersService().parse(player.getName(), player.getUniqueId(),
-                            headLocation, huntConfig.getHeadClickTitleSubTitle(), hunt.getId());
-                    int fadeIn = huntConfig.getHeadClickTitleFadeIn();
-                    int stay = huntConfig.getHeadClickTitleStay();
-                    int fadeOut = huntConfig.getHeadClickTitleFadeOut();
-                    player.sendTitle(firstLine, subTitle, fadeIn, stay, fadeOut);
-                }
-
-                if (huntConfig.isFireworkEnabled()) {
-                    List<Color> colors = registry.getConfigService().headClickFireworkColors();
-                    List<Color> fadeColors = registry.getConfigService().headClickFireworkFadeColors();
-                    boolean isFlickering = registry.getConfigService().fireworkFlickerEnabled();
-                    int power = registry.getConfigService().headClickFireworkPower();
-
-                    Location loc = power == 0 ? clickedLocation.clone() : clickedLocation.clone().add(0, 0.5, 0);
-                    FireworkUtils.launchFirework(loc, isFlickering,
-                            colors.isEmpty(), colors, fadeColors.isEmpty(), fadeColors,
-                            power, wallHead);
-                }
-
-                Bukkit.getPluginManager().callEvent(
-                        new HeadClickEvent(headLocation.getUuid(), player, clickedLocation, true, List.of(hunt.getId())));
+                // Success path: the blocking SQL write must not run on the server thread.
+                // Hand the slot to the async task, which releases it once persistence settles.
+                releaseNow = false;
+                persistClaimAsync(player, headLocation, clickedLocation, wallHead, hunt, huntConfig,
+                        new ArrayList<>(huntPlayerHeads), key);
             } catch (InternalException ex) {
                 LogUtil.error("Error processing hunt {0} click for player {1}: {2}",
-                        hunt.getId(), player.getName(), ex.getMessage());
+                        huntId, player.getName(), ex.getMessage());
+            } finally {
+                if (releaseNow) {
+                    claimsInProgress.remove(key);
+                }
             }
         });
+    }
+
+    /**
+     * Persists the claim off the server thread, then applies all Bukkit effects back on it.
+     * Rewards and other effects only run after the database write succeeds, so a duplicate
+     * click arriving mid-write is suppressed by {@link #claimsInProgress} instead of
+     * producing a duplicate row or a double reward.
+     */
+    private void persistClaimAsync(Player player, HeadLocation headLocation, Location clickedLocation,
+                                   boolean wallHead, HBHunt hunt, HuntConfig huntConfig,
+                                   ArrayList<UUID> huntPlayerHeads, String claimKey) {
+        UUID playerUuid = player.getUniqueId();
+        UUID headUuid = headLocation.getUuid();
+        String huntId = hunt.getId();
+        String playerName = player.getName();
+
+        Runnable dbWrite = () -> {
+            try {
+                registry.getStorageService().addHeadForHunt(playerUuid, headUuid, huntId);
+            } catch (InternalException ex) {
+                LogUtil.error("Error persisting hunt {0} head for player {1}: {2}",
+                        huntId, playerName, ex.getMessage());
+                runOnMain(player, () -> {
+                    claimsInProgress.remove(claimKey);
+                    player.sendMessage(registry.getLanguageService().message("Messages.StorageError"));
+                });
+                return;
+            }
+
+            runOnMain(player, () -> {
+                try {
+                    applyClaimEffects(player, headLocation, clickedLocation, wallHead, hunt, huntConfig, huntPlayerHeads);
+                } finally {
+                    claimsInProgress.remove(claimKey);
+                }
+            });
+        };
+
+        var scheduler = registry.getScheduler();
+        if (scheduler != null) {
+            scheduler.runTaskAsync(dbWrite);
+        } else {
+            dbWrite.run();
+        }
+    }
+
+    private void runOnMain(Player player, Runnable task) {
+        var scheduler = registry.getScheduler();
+        if (scheduler != null) {
+            scheduler.runTask(player, task);
+        } else {
+            task.run();
+        }
+    }
+
+    private void applyClaimEffects(Player player, HeadLocation headLocation, Location clickedLocation,
+                                   boolean wallHead, HBHunt hunt, HuntConfig huntConfig,
+                                   ArrayList<UUID> huntPlayerHeads) {
+        String huntId = hunt.getId();
+
+        hunt.notifyHeadFound(player, headLocation);
+        registry.getAreaEnforcementService().onHeadFound(player, hunt, huntPlayerHeads.size());
+
+        registry.getRewardService().giveReward(player, huntPlayerHeads, headLocation, huntConfig, huntId);
+
+        for (var reward : headLocation.getRewards()) {
+            reward.execute(player, headLocation, registry);
+        }
+
+        registry.getVisibilityService().onHeadFound(player, headLocation);
+
+        String songName = huntConfig.getHeadClickSoundFound();
+        if (!songName.trim().isEmpty()) {
+            try {
+                XSound.play(songName, s -> s.forPlayers(player));
+            } catch (Exception ex) {
+                LogUtil.error("Error cannot play sound on head click! Cannot parse provided name...");
+            }
+        }
+
+        if (huntConfig.isHeadClickTitleEnabled()) {
+            String firstLine = registry.getPlaceholdersService().parse(player.getName(), player.getUniqueId(),
+                    headLocation, huntConfig.getHeadClickTitleFirstLine(), huntId);
+            String subTitle = registry.getPlaceholdersService().parse(player.getName(), player.getUniqueId(),
+                    headLocation, huntConfig.getHeadClickTitleSubTitle(), huntId);
+            int fadeIn = huntConfig.getHeadClickTitleFadeIn();
+            int stay = huntConfig.getHeadClickTitleStay();
+            int fadeOut = huntConfig.getHeadClickTitleFadeOut();
+            player.sendTitle(firstLine, subTitle, fadeIn, stay, fadeOut);
+        }
+
+        if (huntConfig.isFireworkEnabled()) {
+            List<Color> colors = registry.getConfigService().headClickFireworkColors();
+            List<Color> fadeColors = registry.getConfigService().headClickFireworkFadeColors();
+            boolean isFlickering = registry.getConfigService().fireworkFlickerEnabled();
+            int power = registry.getConfigService().headClickFireworkPower();
+
+            Location loc = power == 0 ? clickedLocation.clone() : clickedLocation.clone().add(0, 0.5, 0);
+            FireworkUtils.launchFirework(loc, isFlickering,
+                    colors.isEmpty(), colors, fadeColors.isEmpty(), fadeColors,
+                    power, wallHead);
+        }
+
+        Bukkit.getPluginManager().callEvent(
+                new HeadClickEvent(headLocation.getUuid(), player, clickedLocation, true, List.of(huntId)));
     }
 
     private void showAlreadyClaimed(Player player, HeadLocation headLocation,
