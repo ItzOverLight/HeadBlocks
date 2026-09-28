@@ -206,7 +206,7 @@ jobs:
             znpcsplus(optional)
 
           # Java version
-          java: 17
+          java: 21
 
       # Not featured: the Paper build stays the headline download, while filtering on Spigot or
       # Bukkit still surfaces this one.
@@ -271,7 +271,7 @@ jobs:
             znpcsplus(optional)
 
           # Java version
-          java: 17
+          java: 21
 
   publish-hangar:
     needs: release

@@ -468,9 +468,14 @@ tasks {
         )
     }
 
-    compileJava {
-        sourceCompatibility = JavaVersion.VERSION_17.toString()
-        targetCompatibility = JavaVersion.VERSION_17.toString()
+    // The build JDK may be newer (CI uses 25 to compile against the visual
+    // provider APIs), but emitted bytecode must stay Java 21 so the jar loads
+    // on Java 21 servers (class file version 65.0). This must cover every
+    // source set — main, spigot, paper and tests: previously only compileJava
+    // was pinned, which is how PaperPlatform shipped as 69.0 and broke on
+    // Java 21 runtimes.
+    withType<JavaCompile>().configureEach {
+        options.release.set(21)
         options.encoding = "UTF-8"
     }
 
