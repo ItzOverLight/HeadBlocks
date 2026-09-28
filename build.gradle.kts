@@ -111,16 +111,19 @@ val paper = sourceSets.create("paper") {
     runtimeClasspath += sourceSets["main"].output
 }
 
-// Visual provider APIs target newer JVMs than the plugin: they are only compiled against, and the hooks
-// are instantiated only when their plugin runs, so the JVM compatibility check must not reject them.
+// Visual provider APIs are only compiled against, and the hooks are
+// instantiated only when their plugin runs, so the JVM compatibility check
+// must not reject them. All provider dependencies must stay readable by
+// JDK 21 (class file 65.0 max) — do not upgrade any of them to a version
+// shipping newer bytecode.
 configurations.compileClasspath {
-    attributes { attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 25) }
+    attributes { attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 21) }
 }
 
 // Tests need  the providerAPIs too, but last on the classpath: some of them shade unrelocated libraries.
 val providerApis = configurations.create("providerApis") {
     isTransitive = false
-    attributes { attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 25) }
+    attributes { attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 21) }
 }
 
 sourceSets.test {
@@ -468,12 +471,12 @@ tasks {
         )
     }
 
-    // The build JDK may be newer (CI uses 25 to compile against the visual
-    // provider APIs), but emitted bytecode must stay Java 21 so the jar loads
-    // on Java 21 servers (class file version 65.0). This must cover every
-    // source set — main, spigot, paper and tests: previously only compileJava
-    // was pinned, which is how PaperPlatform shipped as 69.0 and broke on
-    // Java 21 runtimes.
+    // Everything builds on JDK 21 and emits Java 21 bytecode (class file
+    // version 65.0) so the jar loads on Java 21 servers. This must cover
+    // every source set — main, spigot, paper and tests: previously only
+    // compileJava was pinned, which is how PaperPlatform shipped as 69.0
+    // and broke on Java 21 runtimes. Keep dependencies at variants
+    // readable by JDK 21 (no class file newer than 65.0 on the classpath).
     withType<JavaCompile>().configureEach {
         options.release.set(21)
         options.encoding = "UTF-8"
