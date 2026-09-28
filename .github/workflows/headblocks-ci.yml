@@ -9,14 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Build JDK, not the plugin target: compilation needs 25 for the visual
-      # provider APIs, while build.gradle.kts emits Java 21 bytecode (65.0)
-      # so the jar loads on Java 21 servers.
-      - name: Set up JDK 25
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: 25
+          java-version: 21
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
       - name: Build jars
