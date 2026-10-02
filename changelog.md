@@ -12,6 +12,7 @@
 
 ### 🚀 Improvements
 
+- Folia support: use the Paper jar on Folia servers (region and entity schedulers, async teleports).
 - Heads rendered as entities are hidden natively for players who found them with `hideFoundHeads`: no PacketEvents needed, and no invisible collision left behind.
 - Entities are never saved in the world: they are spawned when their chunk loads and respawned if something removes them, so uninstalling the plugin leaves nothing behind.
 - Placed block heads are protected: they don't burn, melt, decay, pop off when their support is removed or get pulled by a sticky piston, and clicking one only claims it (a chest doesn't open, a lever doesn't toggle).

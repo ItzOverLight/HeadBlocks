@@ -34,12 +34,12 @@ public class RemoveAll implements Cmd {
 
             registry.getHeadService().removeAllHeadLocationsAsync(headLocations, registry.getConfigService().resetPlayerData(), (headRemoved) -> {
                 if (headRemoved == 0) {
-                    sender.sendMessage(registry.getLanguageService().message("Messages.RemoveAllError")
+                    tell(sender, registry.getLanguageService().message("Messages.RemoveAllError")
                             .replace("%headCount%", String.valueOf(headCount)));
                     return;
                 }
 
-                sender.sendMessage(registry.getLanguageService().message("Messages.RemoveAllSuccess")
+                tell(sender, registry.getLanguageService().message("Messages.RemoveAllSuccess")
                         .replace("%headCount%", String.valueOf(headRemoved)));
             });
 
@@ -50,6 +50,15 @@ public class RemoveAll implements Cmd {
                 .replace("%headCount%", String.valueOf(headCount)));
 
         return true;
+    }
+
+    private void tell(CommandSender sender, String message) {
+        // Callbacks run on the global region thread: Player.sendMessage must hop to its entity thread on Folia.
+        if (sender instanceof org.bukkit.entity.Player player) {
+            registry.getScheduler().runTask(player, () -> sender.sendMessage(message));
+        } else {
+            sender.sendMessage(message);
+        }
     }
 
     @Override

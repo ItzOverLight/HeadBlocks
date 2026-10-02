@@ -46,15 +46,24 @@ public class Export implements Cmd {
             try {
                 ExportSQLHelper.generateFile(registry, typeDatabase, fileName);
             } catch (Exception ex) {
-                sender.sendMessage(MessageUtils.colorize(registry.getLanguageService().message("Messages.ExportError") + ex.getMessage()));
+                sendBackToSender(sender, MessageUtils.colorize(registry.getLanguageService().message("Messages.ExportError") + ex.getMessage()));
                 return;
             }
 
-            sender.sendMessage(MessageUtils.colorize(registry.getLanguageService().message("Messages.ExportSuccess"))
+            sendBackToSender(sender, MessageUtils.colorize(registry.getLanguageService().message("Messages.ExportSuccess"))
                     .replace("%fileName%", fileName));
         });
 
         return true;
+    }
+
+    private void sendBackToSender(CommandSender sender, String message) {
+        // CommandSender can be a Player: Player.sendMessage must run on its entity thread on Folia.
+        if (sender instanceof org.bukkit.entity.Player player) {
+            HeadBlocks.getScheduler().runTask(player, () -> sender.sendMessage(message));
+        } else {
+            HeadBlocks.getScheduler().runTask(() -> sender.sendMessage(message));
+        }
     }
 
     @Override

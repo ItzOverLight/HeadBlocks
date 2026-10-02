@@ -2,8 +2,8 @@
 
 ## Prerequisites
 
-HeadBlocks can be used on any Minecraft server running Spigot, Paper, or similar server software (excluding
-Vanilla/Folia) starting from version **1.20+**.
+HeadBlocks can be used on any Minecraft server running Spigot, Paper, or Folia starting from version **1.20+**.
+Use the Paper jar on Paper and Folia (it carries `folia-supported` and the region schedulers); use the Spigot jar on Spigot.
 
 If you want to use HeadBlocks on versions **below 1.16.5**, you can use HeadBlocks version 1.6.x. These versions will
 not receive new features but will continue to receive bug fixes.

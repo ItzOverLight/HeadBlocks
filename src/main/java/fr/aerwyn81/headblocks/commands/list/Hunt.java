@@ -235,7 +235,7 @@ public class Hunt implements Cmd {
                 registry.getStorageService().deletePlayerProgressForHunt(huntId);
                 registry.getStorageService().deleteHuntFromDb(huntId);
             } catch (Exception e) {
-                sender.sendMessage(registry.getLanguageService().message("Messages.StorageError"));
+                tell(sender, registry.getLanguageService().message("Messages.StorageError"));
                 LogUtil.error("Error during hunt delete cleanup: {0}", e.getMessage());
                 return;
             }
@@ -244,7 +244,7 @@ public class Hunt implements Cmd {
             registry.getHuntService().unregisterHunt(huntId);
             registry.getStorageService().incrementHuntVersion();
 
-            sender.sendMessage(registry.getLanguageService().message("Messages.HuntDeleted")
+            tell(sender, registry.getLanguageService().message("Messages.HuntDeleted")
                     .replace("%hunt%", huntId));
         });
     }
@@ -469,7 +469,7 @@ public class Hunt implements Cmd {
 
         registry.getVisualService().convertHunt(hunt, mode, report -> {
             registry.getStorageService().incrementHuntVersion();
-            sender.sendMessage(registry.getLanguageService().message("Messages.HuntRenderingDone")
+            tell(sender, registry.getLanguageService().message("Messages.HuntRenderingDone")
                     .replace("%hunt%", hunt.getId())
                     .replace("%rendering%", mode.name().toLowerCase())
                     .replace("%converted%", String.valueOf(report.converted()))
@@ -1002,5 +1002,14 @@ public class Hunt implements Cmd {
             suggestions.add("--fallback");
         }
         return suggestions;
+    }
+
+    private void tell(CommandSender sender, String message) {
+        // Callbacks run on the global region thread: Player.sendMessage must hop to its entity thread on Folia.
+        if (sender instanceof Player player) {
+            registry.getScheduler().runTask(player, () -> sender.sendMessage(message));
+        } else {
+            sender.sendMessage(message);
+        }
     }
 }
